@@ -1,15 +1,15 @@
-import requests
-import shutil
 import os
+import time
+import requests
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from pyairtable import Api
 from dotenv import load_dotenv
-import time
+import re
 
-# Load API keys from .env file
+# Load environment variables from .env file
 load_dotenv()
 
 AIRTABLE_API_KEY = os.getenv("AIRTABLE_API_KEY")
@@ -19,102 +19,84 @@ AIRTABLE_TABLE_NAME = os.getenv("AIRTABLE_TABLE_NAME")
 # Initialize Airtable API
 airtable = Api(AIRTABLE_API_KEY).table(AIRTABLE_BASE_ID, AIRTABLE_TABLE_NAME)
 
-# Detect OS and set ChromeDriver path
-CHROMEDRIVER_PATH = shutil.which("chromedriver")  # macOS/Linux default
-
-# If not found, fallback to a common installation path
-if not CHROMEDRIVER_PATH:
-    CHROMEDRIVER_PATH = "/opt/homebrew/bin/chromedriver"  # macOS M1/M2
-
 # Setup ChromeDriver for Selenium
 chrome_options = Options()
-chrome_options.add_argument("--headless")  # Run in headless mode (no GUI)
+chrome_options.add_argument("--headless")
 chrome_options.add_argument("--no-sandbox")
 chrome_options.add_argument("--disable-dev-shm-usage")
 
+CHROMEDRIVER_PATH = "/opt/homebrew/bin/chromedriver"  # Update path as needed
 chrome_service = Service(CHROMEDRIVER_PATH)
 
-def test_chrome():
-    """Test if ChromeDriver is working."""
-    driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-    driver.get("https://www.google.com")
-    print("ChromeDriver is working:", driver.title)
-    driver.quit()
-
-def scrape_meetup():
-    """Scrapes event data from Meetup's website."""
-    url = "https://www.meetup.com/find/events/"
-    driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-    driver.get(url)
-    time.sleep(5)  # Allow page to load
-
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    driver.quit()
-
-    events = []
-    for event in soup.find_all("div", class_="eventCard--mainContent"):
-        title = event.find("h3").text.strip()
-        date = event.find("time").text.strip()
-        link = event.find("a")["href"]
-
-        events.append({
-            "title": title,
-            "date": date,
-            "url": link,
-            "category": "General"
-        })
-
-    return events
-
 def scrape_eventbrite():
-    """Scrapes event data from Eventbrite's website."""
-    url = "https://www.eventbrite.com/d/online/all-events/"
-    driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-    driver.get(url)
-    time.sleep(5)
-
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    driver.quit()
-
+    """Scrapes event data from Eventbrite category pages."""
+    
+    category_urls = {
+        "Product Management": "https://www.eventbrite.co.uk/d/united-kingdom--london/product-management/",
+        "AI": "https://www.eventbrite.co.uk/d/united-kingdom--london/ai/",
+        "Software Engineering": "https://www.eventbrite.co.uk/d/united-kingdom--london/software-development/",
+        "Business Development": "https://www.eventbrite.co.uk/d/united-kingdom--london/business/",
+        "Design": "https://www.eventbrite.co.uk/d/united-kingdom--london/design/",
+    }
+    
     events = []
-    for event in soup.find_all("div", class_="eds-event-card-content__content"):
-        title = event.find("div", class_="eds-event-card-content__primary-content").text.strip()
-        date = event.find("div", class_="eds-text-bs").text.strip()
-        link = event.find("a")["href"]
+    
+    for category, url in category_urls.items():
+        print(f"Scraping category: {category} → {url}")
+        
+        driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
+        driver.get(url)
 
-        events.append({
-            "title": title,
-            "date": date,
-            "url": link,
-            "category": "General"
-        })
+        # Wait for JavaScript to load
+        time.sleep(5)
 
-    return events
+        # Scroll down dynamically to load more events
+        for _ in range(5):  
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(3)
 
-def scrape_luma():
-    """Scrapes event data from Luma's website."""
-    url = "https://lu.ma/discover"
-    driver = webdriver.Chrome(service=chrome_service, options=chrome_options)
-    driver.get(url)
-    time.sleep(5)
+        soup = BeautifulSoup(driver.page_source, "html.parser")
+        driver.quit()
 
-    soup = BeautifulSoup(driver.page_source, "html.parser")
-    driver.quit()
+        # Select event containers based on latest class
+        for event in soup.find_all("div", class_="discover-search-desktop-card discover-search-desktop-card--hiddeable"):
+            try:
+                # Extract Title
+                title_element = event.find("div", class_="Stack_root__1ksk7")
+                title = title_element.text.strip() if title_element else "No Title"
 
-    events = []
-    for event in soup.find_all("div", class_="css-1dbjc4n r-18u37iz r-1wbh5a2 r-1pi2tsx r-1777fci r-13qz1uu"):
-        title_tag = event.find("span", class_="r-18u37iz")
-        if title_tag:
-            title = title_tag.text.strip()
-            link_tag = event.find("a")
-            link = link_tag["href"] if link_tag else "#"
+                # Extract Link
+                link_element = event.find("a", class_="Stack_root__1ksk7")
+                link = link_element["href"] if link_element else "No Link"
+                if not link.startswith("https://"):
+                    link = "https://www.eventbrite.co.uk" + link
 
-            events.append({
-                "title": title,
-                "date": "Unknown",
-                "url": link,
-                "category": "General"
-            })
+                # Extract Date
+                date_element = event.find("div", class_="Typography_root__487rx Typography_body-md__487rx event-card__clamp-line--one Typography_align-match-parent__487rx")
+                date = date_element.text.strip() if date_element else "No Date"
+
+                # Extract Price
+                price_element = event.find("div", class_="DiscoverHorizontalEventCard-module__priceWrapper___3rOUY")
+                price = price_element.text.strip() if price_element else "Free"
+
+                event_type = "Online" if "online" in url else "In-Person"
+
+                events.append({
+                    "Title": title,
+                    "Date & Time": date,
+                    "Location": "London",
+                    "City": "London",
+                    "Event URL": link,
+                    "Description": "No Description Available",
+                    "Category": category,
+                    "Price": price,
+                    "Event Type": event_type,
+                    "Tags": [category],
+                    "Image URL": "No Image"
+                })
+
+            except Exception as e:
+                print(f"Error scraping an event: {e}")
 
     return events
 
@@ -122,27 +104,26 @@ def save_to_airtable(events):
     """Saves events to Airtable."""
     for event in events:
         airtable.create({
-            "Title": event["title"],
-            "Date": event["date"],
-            "URL": event["url"],
-            "Category": event["category"]
+            "Title": event["Title"],
+            "Date & Time": event["Date & Time"],
+            "Location": event["Location"],
+            "City": event["City"],
+            "Event URL": event["Event URL"],
+            "Description": event["Description"],
+            "Category": event["Category"],
+            "Price": event["Price"],
+            "Event Type": event["Event Type"],
+            "Tags": event["Tags"],
+            "Image URL": event["Image URL"]
         })
-        print(f"Added: {event['title']}")
+        print(f"Added to Airtable: {event['Title']}")
 
 def main():
-    print("Scraping Meetup...")
-    meetup_events = scrape_meetup()
-
     print("Scraping Eventbrite...")
     eventbrite_events = scrape_eventbrite()
 
-    print("Scraping Luma...")
-    luma_events = scrape_luma()
-
-    all_events = meetup_events + eventbrite_events + luma_events
-
-    print(f"Found {len(all_events)} events. Saving to Airtable...")
-    save_to_airtable(all_events)
+    print(f"Found {len(eventbrite_events)} events. Saving to Airtable...")
+    save_to_airtable(eventbrite_events)
 
 if __name__ == "__main__":
     main()
